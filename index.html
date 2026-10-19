@@ -90,7 +90,25 @@ tbody th{font-family:var(--display);font-size:18px;font-weight:700}
 tr.me th{color:var(--accent)}
 tr.me td,tr.me th{box-shadow:inset 0 2px 0 var(--accent),inset 0 -2px 0 var(--accent)}
 .chip{display:inline-block;font-size:13px;font-weight:600;padding:3px 8px;border-radius:5px;color:var(--c);background:var(--cb)}
-@media (max-width:480px){.person{font-size:30px}.weektitle{font-size:24px}}
+.field{display:flex;flex-direction:column;gap:4px;font-size:13px;font-weight:600;color:var(--muted)}
+input[type=date]{font:inherit;font-size:14px;font-weight:400;color:var(--ink);background:var(--bg);border:1px solid var(--line);border-radius:6px;padding:7px 10px;min-width:0}
+input[type=date]:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
+.weekbar .jump{flex:0 1 auto}
+.controls{display:flex;flex-wrap:wrap;align-items:flex-end;gap:12px;background:var(--surface);border:1px solid var(--line);border-radius:10px;padding:12px 14px}
+.presets{display:flex;flex-wrap:wrap;gap:8px}
+.presets button{padding:7px 10px;font-size:13px}
+.presets button.on{border-color:var(--accent);color:var(--accent)}
+.count{font-size:13px;color:var(--muted);margin-left:auto}
+#plan tbody tr.wk{cursor:pointer}
+#plan tbody tr.wk:hover td,#plan tbody tr.wk:hover th{background:var(--hl)}
+#plan tbody tr.wk:focus-visible{outline:2px solid var(--accent);outline-offset:-2px}
+#plan tbody th{font-family:var(--body);font-size:14px;font-weight:600}
+#plan tbody th small{display:block;font-weight:400;font-size:12px;color:var(--muted)}
+#plan tr.month td{font-family:var(--display);font-weight:700;font-size:14px;letter-spacing:.1em;text-transform:uppercase;color:var(--accent);background:var(--bg);padding:6px 10px}
+#plan tr.cur th,#plan tr.cur td{background:var(--hl)}
+#plan th.mecol,#plan td.mecol{box-shadow:inset 2px 0 0 var(--orange),inset -2px 0 0 var(--orange)}
+#plan thead th.mecol{color:var(--ink)}
+@media (max-width:480px){.person{font-size:30px}.weektitle{font-size:24px}.count{margin-left:0;width:100%}}
 @media (prefers-reduced-motion:no-preference){.card{transition:background .2s,border-color .2s}}
 </style>
 </head>
@@ -110,6 +128,9 @@ tr.me td,tr.me th{box-shadow:inset 0 2px 0 var(--accent),inset 0 -2px 0 var(--ac
       <div class="eyebrow" id="cycle"></div>
       <div class="weektitle" id="weektitle"></div>
     </div>
+    <label class="field jump" for="jump">Go to a date
+      <input type="date" id="jump">
+    </label>
     <div class="btns">
       <button id="prev" aria-label="Previous week">‹ Prev</button>
       <button id="today" class="primary">This week</button>
@@ -120,9 +141,22 @@ tr.me td,tr.me th{box-shadow:inset 0 2px 0 var(--accent),inset 0 -2px 0 var(--ac
   <div class="board" id="board"></div>
 
   <section class="section">
-    <h2>Next 6 weeks</h2>
-    <p class="note">Tap a week to see its assignments above. One full cycle is 6 weeks, so the pattern repeats after that.</p>
-    <div class="tablewrap"><table id="grid"></table></div>
+    <h2>Schedule</h2>
+    <div class="controls">
+      <label class="field" for="from">From
+        <input type="date" id="from">
+      </label>
+      <label class="field" for="to">To
+        <input type="date" id="to">
+      </label>
+      <div class="presets" role="group" aria-label="Quick ranges">
+        <button data-m="3">3 months</button>
+        <button data-m="6">6 months</button>
+        <button data-m="12">1 year</button>
+      </div>
+      <span class="count" id="count"></span>
+    </div>
+    <div class="tablewrap"><table id="plan"></table></div>
   </section>
 </div>
 
@@ -130,7 +164,7 @@ tr.me td,tr.me th{box-shadow:inset 0 2px 0 var(--accent),inset 0 -2px 0 var(--ac
 const JOBS=[
  {name:"DG (Dangerous Goods)",short:"DG",duties:[
    ["BTVRT","Heavyweights before the sort"],
-   ["BTVA","DG after the sort"],
+   ["BTVA","DG at the Sort"],
    ["Airport","DG at the Airport"]]},
  {name:"Flight Agent",short:"Flight",duties:[
    ["BTVRT","Heavyweights before the sort"],
@@ -166,13 +200,19 @@ const jobOf=(p,w)=>(p[1]+w)%6;
 const personOn=(j,w)=>PEOPLE.find(p=>jobOf(p,w)===j);
 const weekStart=w=>new Date(START+w*7*DAY);
 const fmt=d=>MON[d.getUTCMonth()]+" "+d.getUTCDate();
-const range=w=>{const a=weekStart(w),b=new Date(a.getTime()+6*DAY);return fmt(a)+" – "+fmt(b)};
+const range=w=>{const a=weekStart(w),b=new Date(a.getTime()+4*DAY);return fmt(a)+" – "+fmt(b)};
 const now=new Date(), todayUTC=Date.UTC(now.getFullYear(),now.getMonth(),now.getDate());
-const rawCur=Math.floor((todayUTC-START)/(7*DAY));
+const rawCur=Math.floor((todayUTC-START+2*DAY)/(7*DAY)); // Sat/Sun roll forward to the coming work week
 const curWeek=Math.max(0,rawCur);
 const cv=n=>`var(--j${n+1})`, cb=n=>`var(--j${n+1}bg)`;
 
-let week=curWeek, me="";
+const MONTHS=["January","February","March","April","May","June","July","August","September","October","November","December"];
+const MAXW=104;
+const pad=n=>String(n).padStart(2,"0");
+const iso=d=>`${d.getUTCFullYear()}-${pad(d.getUTCMonth()+1)}-${pad(d.getUTCDate())}`;
+function weekOfISO(v){if(!v)return null;const [y,m,d]=v.split("-").map(Number);if(!y)return null;return Math.floor((Date.UTC(y,m-1,d)-START+2*DAY)/(7*DAY))}
+function addMonths(d,k){const x=new Date(d.getTime());x.setUTCMonth(x.getUTCMonth()+k);return x}
+let week=curWeek, me="", preset=3;
 try{me=localStorage.getItem("btv-me")||""}catch(e){}
 
 const sel=document.getElementById("me");
@@ -197,18 +237,44 @@ function render(){
       <div class="next">Next week: ${nx[0]}</div>
     </article>`}).join("");
 
-  const base=week-(week%6), cols=[0,1,2,3,4,5].map(k=>base+k);
-  let h=`<thead><tr><th scope="col">Person</th>`+cols.map(w=>
-    `<th scope="col" class="${w===week?"sel":""}"><button data-w="${w}"><span>${fmt(weekStart(w))}</span><span>Week ${w%6+1}</span></button></th>`).join("")+`</tr></thead><tbody>`;
-  PEOPLE.forEach(p=>{
-    h+=`<tr class="${p[0]===me?"me":""}"><th scope="row">${p[0]}</th>`+cols.map(w=>{const j=jobOf(p,w);
-      return `<td class="${w===week?"sel":""}"><span class="chip" style="--c:${cv(j)};--cb:${cb(j)}">${JOBS[j].short}</span></td>`}).join("")+`</tr>`});
-  const g=document.getElementById("grid");g.innerHTML=h+"</tbody>";
-  g.querySelectorAll("button[data-w]").forEach(b=>b.onclick=()=>{week=+b.dataset.w;render()});
+  document.getElementById("jump").value=iso(weekStart(week));
+  renderPlan();
+}
+
+function renderPlan(){
+  const fromW=Math.max(0,weekOfISO(fromEl.value)??curWeek);
+  let toW=weekOfISO(toEl.value)??fromW+12;
+  if(toW<fromW) toW=fromW;
+  let capped=false; if(toW-fromW>MAXW-1){toW=fromW+MAXW-1;capped=true}
+  const n=toW-fromW+1;
+  document.getElementById("count").textContent=`${n} week${n>1?"s":""}`+(capped?` (showing the first ${MAXW})`:"");
+  let h=`<thead><tr><th scope="col">Week of</th>`+PEOPLE.map(p=>
+    `<th scope="col" class="${p[0]===me?"mecol":""}">${p[0]}</th>`).join("")+`</tr></thead><tbody>`;
+  let lastMonth=-1;
+  for(let w=fromW;w<=toW;w++){
+    const d=weekStart(w), m=d.getUTCMonth();
+    if(m!==lastMonth){h+=`<tr class="month"><td colspan="${PEOPLE.length+1}">${MONTHS[m]} ${d.getUTCFullYear()}</td></tr>`;lastMonth=m}
+    h+=`<tr class="wk${w===week?" cur":""}" data-w="${w}" tabindex="0"><th scope="row">${range(w)}<small>Cycle week ${w%6+1}</small></th>`+
+      PEOPLE.map(p=>{const j=jobOf(p,w);
+        return `<td class="${p[0]===me?"mecol":""}"><span class="chip" style="--c:${cv(j)};--cb:${cb(j)}">${JOBS[j].short}</span></td>`}).join("")+`</tr>`;
+  }
+  const t=document.getElementById("plan");t.innerHTML=h+"</tbody>";
+  t.querySelectorAll("tr.wk").forEach(r=>{
+    const go=()=>{week=+r.dataset.w;render();document.querySelector(".weekbar").scrollIntoView({behavior:matchMedia("(prefers-reduced-motion: reduce)").matches?"auto":"smooth",block:"start"})};
+    r.onclick=go; r.onkeydown=e=>{if(e.key==="Enter"||e.key===" "){e.preventDefault();go()}};
+  });
+  document.querySelectorAll(".presets button").forEach(b=>b.classList.toggle("on",+b.dataset.m===preset));
 }
 document.getElementById("prev").onclick=()=>{if(week>0){week--;render()}};
 document.getElementById("next").onclick=()=>{week++;render()};
 document.getElementById("today").onclick=()=>{week=curWeek;render()};
+document.getElementById("jump").onchange=e=>{const w=weekOfISO(e.target.value);if(w===null)return;week=Math.max(0,w);render()};
+const fromEl=document.getElementById("from"), toEl=document.getElementById("to");
+function setPreset(m){preset=m;const a=weekStart(curWeek);fromEl.value=iso(a);toEl.value=iso(new Date(addMonths(a,m).getTime()-DAY));renderPlan()}
+fromEl.min=toEl.min=iso(weekStart(0));
+fromEl.onchange=toEl.onchange=()=>{preset=0;renderPlan()};
+document.querySelectorAll(".presets button").forEach(b=>b.onclick=()=>setPreset(+b.dataset.m));
+{const a=weekStart(curWeek);fromEl.value=iso(a);toEl.value=iso(new Date(addMonths(a,3).getTime()-DAY))}
 render();
 </script>
 </body>
