@@ -163,7 +163,7 @@ input[type=date]:focus-visible{outline:2px solid var(--accent);outline-offset:2p
       <span class="assign-week" id="aweek"></span>
       <span class="save" id="asave" role="status" aria-live="polite"></span>
     </div>
-    <p class="note" id="anote" hidden>Not connected to the Google Sheet yet, so picks only save on this device.</p>
+    <p class="note" id="anote" hidden>Not connected to the online database yet, so picks only save on this device.</p>
     <div class="groups" id="groups"></div>
   </section>
 
@@ -249,8 +249,10 @@ sel.onchange=()=>{me=sel.value;try{localStorage.setItem("btv-me",me)}catch(e){};
 
 
 // ---- Weekly assignments ----
-// Paste your Google Apps Script web app address between the quotes (it ends in /exec).
-const SHEET_URL="";
+// Paste your Supabase Project URL and publishable (anon) key between the quotes.
+const SUPABASE_URL="";
+const SUPABASE_KEY="";
+const DB_ON=!!(SUPABASE_URL&&SUPABASE_KEY);
 const SECTIONS=[
  ["BELLIES",["Aft Load Capt / Pos Check","Fwd Load Capt / Pos Check","Fwd Security Check","Aft Security Check","Box Truck Driver (unload or in belly)","Unload Truck","In Belly","In Belly","In Belly"]],
  ["TOPSIDE",["Security Checks/Load Captain","Commander Operator","Push Cans","Push Cans"]],
@@ -262,38 +264,47 @@ const SLOTS=[];
 SECTIONS.forEach(([sec,jobs])=>{const tot={},c={};jobs.forEach(j=>tot[j]=(tot[j]||0)+1);
   jobs.forEach(j=>{c[j]=(c[j]||0)+1;SLOTS.push({sec,job:j,n:tot[j]>1?c[j]:0})})});
 const HEADERS=SLOTS.map(x=>`${x.sec} - ${x.job}${x.n?` (${x.n})`:""}`);
-const LS_KEY="btv-assign";
-let store={}, pending=0, saveTimer=null;
+const LS_KEY="btv-assign2";
+// store[week] = { "BELLIES - In Belly (1)": "Tom I", ... }  (keyed by job label, so reordering jobs is safe)
+let store={}, loadedWeeks=new Set(), pending=0, saveTimer=null;
 const esc=t=>String(t).replace(/[&<>"]/g,ch=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;"}[ch]));
 function setSave(msg,err){const el=document.getElementById("asave");el.textContent=msg;el.classList.toggle("err",!!err);
   clearTimeout(saveTimer);if(msg==="Saved"||msg==="Saved on this device")saveTimer=setTimeout(()=>{el.textContent=""},2500)}
+function dbHeaders(extra){const h={apikey:SUPABASE_KEY};if(!SUPABASE_KEY.startsWith("sb_"))h.Authorization="Bearer "+SUPABASE_KEY;return Object.assign(h,extra||{})}
+const API=()=>SUPABASE_URL.replace(/\/+$/,"")+"/rest/v1/assignments";
 
-async function loadAssign(quiet){
-  if(!SHEET_URL){try{store=JSON.parse(localStorage.getItem(LS_KEY)||"{}")||{}}catch(e){store={}}
-    document.getElementById("anote").hidden=false;renderAssign();return}
+async function loadWeek(wk,quiet){
+  if(!DB_ON){if(!loadedWeeks.size){try{store=JSON.parse(localStorage.getItem(LS_KEY)||"{}")||{}}catch(e){store={}}
+      document.getElementById("anote").hidden=false}
+    loadedWeeks.add(wk);return}
   if(!quiet)setSave("Loading…");
-  try{const r=await fetch(SHEET_URL,{cache:"no-store"});const d=await r.json();if(!d.ok)throw new Error(d.error);
-    if(pending===0){store=d.weeks||{};renderAssign()}
-    if(!quiet)setSave("")}
+  try{const r=await fetch(`${API()}?select=job,name&week=eq.${wk}`,{headers:dbHeaders(),cache:"no-store"});
+    if(!r.ok)throw new Error(r.status);const rows=await r.json();
+    if(pending===0){const o={};rows.forEach(x=>{o[x.job]=x.name});store[wk]=o}
+    loadedWeeks.add(wk);if(!quiet)setSave("")}
   catch(e){setSave("Couldn't load assignments. Check your connection and refresh.",true)}
+  if(iso(weekStart(week))===wk)renderAssign();
 }
 async function saveSlot(wk,i,name){
-  const arr=store[wk]=(store[wk]||[]).slice();arr[i]=name;renderAssign();
-  if(!SHEET_URL){try{localStorage.setItem(LS_KEY,JSON.stringify(store))}catch(e){}setSave("Saved on this device");return}
+  const key=HEADERS[i];store[wk]=Object.assign({},store[wk]||{},{[key]:name});renderAssign();
+  if(!DB_ON){try{localStorage.setItem(LS_KEY,JSON.stringify(store))}catch(e){}setSave("Saved on this device");return}
   pending++;setSave("Saving…");
-  try{const r=await fetch(SHEET_URL,{method:"POST",body:JSON.stringify({week:wk,slot:i,name,headers:HEADERS})});
-    const d=await r.json();if(!d.ok)throw new Error(d.error);setSave("Saved")}
+  try{const r=await fetch(`${API()}?on_conflict=week,job`,{method:"POST",
+      headers:dbHeaders({"Content-Type":"application/json","Prefer":"resolution=merge-duplicates,return=minimal"}),
+      body:JSON.stringify([{week:wk,job:key,name,updated_at:new Date().toISOString()}])});
+    if(!r.ok)throw new Error(r.status);setSave("Saved")}
   catch(e){setSave("Didn't save. Check your connection and pick the name again.",true)}
   finally{pending--}
 }
 function renderAssign(){
-  const wk=iso(weekStart(week)), arr=store[wk]||[];
+  const wk=iso(weekStart(week)), arr=store[wk]||{};
+  if(!loadedWeeks.has(wk))loadWeek(wk);
   document.getElementById("aweek").textContent=`Week of ${range(week)}`;
   const focusId=document.activeElement&&document.activeElement.id;
   const parts=[];let i=0;
   SECTIONS.forEach(([sec,jobs])=>{
     const start=i;let rows="",filled=0;
-    jobs.forEach(()=>{const x=SLOTS[i],v=arr[i]||"";if(v)filled++;
+    jobs.forEach(()=>{const x=SLOTS[i],v=arr[HEADERS[i]]||"";if(v)filled++;
       const opts=[""].concat(WORKERS);if(v&&!WORKERS.includes(v))opts.push(v);
       rows+=`<div class="slot"><label for="slot-${i}">${esc(x.job)}${x.n?`<span class="n">#${x.n}</span>`:""}</label>
         <select id="slot-${i}" data-i="${i}" class="${v?"filled":""}">${opts.map(o=>`<option value="${esc(o)}"${o===v?" selected":""}>${o?esc(o):"—"}</option>`).join("")}</select></div>`;i++});
@@ -303,7 +314,7 @@ function renderAssign(){
   g.querySelectorAll("select").forEach(el=>el.onchange=()=>saveSlot(wk,+el.dataset.i,el.value));
   if(focusId&&focusId.startsWith("slot-")){const f=document.getElementById(focusId);if(f)f.focus()}
 }
-document.addEventListener("visibilitychange",()=>{if(document.visibilityState==="visible"&&SHEET_URL)loadAssign(true)});
+document.addEventListener("visibilitychange",()=>{if(document.visibilityState==="visible"&&DB_ON)loadWeek(iso(weekStart(week)),true)});
 
 function render(){
   document.getElementById("weektitle").innerHTML=`Week of ${range(week)}`+
@@ -361,7 +372,6 @@ fromEl.onchange=toEl.onchange=()=>{preset=0;renderPlan()};
 document.querySelectorAll(".presets button").forEach(b=>b.onclick=()=>setPreset(+b.dataset.m));
 {const a=weekStart(curWeek);fromEl.value=iso(a);toEl.value=iso(new Date(addMonths(a,3).getTime()-DAY))}
 render();
-loadAssign();
 </script>
 </body>
 </html>
